@@ -496,10 +496,17 @@ mod tests {
                 Ok(result) => result,
                 // These actions send real input, which needs an interactive
                 // window station. A service logon, an SSH session, or a CI
-                // container has none, and SendInput then fails with
-                // 0x800705B3. Skip rather than fail: the assertion below is
-                // about not over-claiming success, not about input delivery.
-                Err(error) if error.message.contains("interactive window station") => continue,
+                // container has none. Windows reports that two different
+                // ways: an explicit 0x800705B3 for pointer actions, and a
+                // silent "inserted 0/N events" for keyboard actions. Skip
+                // both: the assertion below is about not over-claiming
+                // success, not about input delivery.
+                Err(error)
+                    if error.message.contains("interactive window station")
+                        || error.message.contains("inserted 0/") =>
+                {
+                    continue
+                }
                 Err(error) => panic!("{action} failed unexpectedly: {}", error.message),
             };
             assert_ne!(
