@@ -491,7 +491,17 @@ mod tests {
                 "scroll" => json!({"scrollY":1,"scrollX":0}),
                 _ => json!({}),
             };
-            let result = act(&json!({"lookId":"look_1","action":action,"policy":"foreground","target":{"x":1,"y":1},"params":params,"resolvedPoint":{"x":1,"y":1}})).unwrap();
+            let outcome = act(&json!({"lookId":"look_1","action":action,"policy":"foreground","target":{"x":1,"y":1},"params":params,"resolvedPoint":{"x":1,"y":1}}));
+            let result = match outcome {
+                Ok(result) => result,
+                // These actions send real input, which needs an interactive
+                // window station. A service logon, an SSH session, or a CI
+                // container has none, and SendInput then fails with
+                // 0x800705B3. Skip rather than fail: the assertion below is
+                // about not over-claiming success, not about input delivery.
+                Err(error) if error.message.contains("interactive window station") => continue,
+                Err(error) => panic!("{action} failed unexpectedly: {}", error.message),
+            };
             assert_ne!(
                 result["outcome"], "worked",
                 "{action} must not report worked without verification"
