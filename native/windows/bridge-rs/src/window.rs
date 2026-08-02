@@ -104,10 +104,13 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetAncestor, GetClassNameW, GetForegroundWindow, GetMessageW, GetWindow,
     GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, SetForegroundWindow, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
+    IsWindowVisible, SetForegroundWindow, ShowWindow, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
     EVENT_OBJECT_HIDE, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GWL_EXSTYLE, GW_OWNER, MSG,
-    WINEVENT_OUTOFCONTEXT, WS_EX_DLGMODALFRAME,
+    SW_RESTORE, WINEVENT_OUTOFCONTEXT, WS_EX_DLGMODALFRAME,
 };
+#[cfg(windows)]
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+
 
 #[cfg(windows)]
 const ROOT_EVENT_CAPACITY: usize = 256;
@@ -505,6 +508,50 @@ pub fn focus_window(
     }
 }
 
+/// Raise a window that another process owns.
+///
+/// `SetForegroundWindow` is advisory. Windows refuses it unless the calling
+/// process already owns the foreground, is processing recent user input, or
+/// holds a foreground-change privilege. A background automation helper meets
+/// none of those, so a bare call silently fails against a real application
+/// such as QuickBooks.
+///
+/// The documented way to make the request legitimate is to attach the calling
+/// thread's input queue to the thread that currently owns the foreground.
+/// While attached, the two threads share foreground state, so the request is
+/// accepted. Detaching afterwards is mandatory: leaving queues attached makes
+/// both threads share input state and can wedge the desktop.
+///
+/// See "SetForegroundWindow" and "AttachThreadInput" in the Win32 docs.
+#[cfg(windows)]
+fn raise_window(target: HWND, restore_first: bool) {
+    unsafe {
+        // A minimized window cannot take the foreground until it is restored.
+        if IsIconic(target).as_bool() || restore_first {
+            let _ = ShowWindow(target, SW_RESTORE);
+        }
+
+        let foreground = GetForegroundWindow();
+        if foreground.0.is_null() {
+            let _ = SetForegroundWindow(target);
+            return;
+        }
+
+        let current = GetCurrentThreadId();
+        let owner = GetWindowThreadProcessId(foreground, None);
+        let attach = owner != 0 && owner != current;
+
+        if attach {
+            let _ = AttachThreadInput(current, owner, TRUE);
+        }
+        let _ = SetForegroundWindow(target);
+        if attach {
+            // Always detach, including on the failure path.
+            let _ = AttachThreadInput(current, owner, BOOL(0));
+        }
+    }
+}
+
 /// Bring an HWND to the foreground and confirm ownership before physical input.
 /// Windows can reject SetForegroundWindow, so success is based on observation,
 /// not the API's advisory return value.
@@ -520,12 +567,12 @@ pub fn ensure_foreground(hwnd: isize) -> Result<(), ProtocolError> {
     #[cfg(windows)]
     {
         let target = HWND(hwnd as *mut _);
-        for _ in 0..4 {
+        for attempt in 0..4 {
             if unsafe { GetForegroundWindow() == target } {
                 return Ok(());
             }
-            let _ = unsafe { SetForegroundWindow(target) };
-            thread::sleep(Duration::from_millis(20));
+            raise_window(target, attempt > 0);
+            thread::sleep(Duration::from_millis(30));
         }
         if unsafe { GetForegroundWindow() == target } {
             Ok(())
