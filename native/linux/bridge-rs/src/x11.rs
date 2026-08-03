@@ -206,26 +206,32 @@ pub fn focus_window(window: Window, policy: PhysicalPolicy) -> Result<Value, Pro
     policy.require_physical(SessionKind::detect())?;
     let (conn, screen) = connect()?;
     let root = conn.setup().roots[screen].root;
-    let atom = intern(&conn, "_NET_ACTIVE_WINDOW")?;
-    let event = ClientMessageEvent {
-        response_type: CLIENT_MESSAGE_EVENT,
-        format: 32,
-        sequence: 0,
-        window,
-        type_: atom,
-        data: ClientMessageData::from([2, 0, 0, 0, 0]),
-    };
-    conn.send_event(
-        false,
-        root,
-        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-        event,
-    )
-    .map_err(xerr)?
-    .check()
-    .map_err(xerr)?;
-    conn.flush().map_err(xerr)?;
-    Ok(json!({"focused":true,"delivery":"ewmh","windowId":window}))
+    let already_focused = active_window(&conn, root)? == Some(window);
+
+    // `_NET_ACTIVE_WINDOW` is a request, not a command. A window manager may
+    // ignore it, defer it, or merely flag the window as urgent, and it never
+    // reports back. Sending it therefore proves nothing about the outcome, so
+    // confirm by reading the active window instead of assuming success. This
+    // mirrors `prepare_focus`, which already confirms before XTEST delivery.
+    if !already_focused {
+        request_active_window(&conn, root, window)?;
+    }
+
+    let mut focused = already_focused;
+    for _ in 0..20 {
+        if active_window(&conn, root)? == Some(window) {
+            focused = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    Ok(json!({
+        "focused": focused,
+        "alreadyFocused": already_focused,
+        "delivery": "ewmh",
+        "windowId": window,
+    }))
 }
 
 pub fn capture_window(
@@ -835,6 +841,36 @@ mod tests {
             .require_physical(SessionKind::Headless)
             .is_err());
     }
+    /// `focus_window` used to hardcode `"focused": true` after sending
+    /// `_NET_ACTIVE_WINDOW`, so it reported success even when the window
+    /// manager ignored the request. An unmapped window id can never become
+    /// active, so it must now report `focused: false`.
+    ///
+    /// Requires a live X11 display; skipped otherwise.
+    #[test]
+    fn focus_window_reports_failure_for_unactivatable_window() {
+        if !matches!(SessionKind::detect(), SessionKind::X11) {
+            eprintln!("skipping: no X11 session");
+            return;
+        }
+        let Ok((conn, screen)) = connect() else {
+            eprintln!("skipping: cannot connect to X display");
+            return;
+        };
+        // A plausible-looking id that is not a mapped, activatable window.
+        let root = conn.setup().roots[screen].root;
+        let bogus = root.wrapping_add(0x00ff_ff00);
+
+        let result = focus_window(bogus, PhysicalPolicy::Foreground)
+            .expect("focus_window should return a result, not an error");
+
+        assert_eq!(
+            result["focused"], false,
+            "an unmapped window must not be reported as focused"
+        );
+        assert_eq!(result["alreadyFocused"], false);
+    }
+
     #[test]
     fn focus_policy_is_deterministic() {
         assert_eq!(
