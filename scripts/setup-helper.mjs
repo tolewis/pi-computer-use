@@ -509,6 +509,20 @@ async function setupWindowsHelper() {
 		return;
 	}
 
+	// Nothing to install from, but a previously installed helper may still be
+	// perfectly good. That is the common case at runtime: the package copy has
+	// no prebuilt directory and cargo is not on the service PATH, while the
+	// helper installed earlier works fine. Keep it and warn rather than failing
+	// a working system.
+	if (await exists(windowsHelperDestPath)) {
+		console.warn(
+			`[pi-computer-use] warning: no Windows prebuilt helper at ${prebuiltPath} and no cargo on PATH; ` +
+				`keeping the helper already installed at ${windowsHelperDestPath}. ` +
+				"Rebuild after changing native sources.",
+		);
+		return;
+	}
+
 	throw new Error(
 		`No Windows prebuilt helper found at ${prebuiltPath}. ` +
 			"Run 'node scripts/build-native.mjs --platform windows' to build, or set PI_COMPUTER_USE_ALLOW_BUILD=1 to build at install time.",
@@ -532,6 +546,16 @@ async function setupLinuxHelper() {
 		console.log(changed ? `[pi-computer-use] built and installed Linux helper at ${linuxHelperDestPath}` : `[pi-computer-use] Linux helper already up to date at ${linuxHelperDestPath}`);
 		return;
 	}
+	// See the Windows path: prefer an already-installed helper over failing.
+	if (await exists(linuxHelperDestPath)) {
+		console.warn(
+			`[pi-computer-use] warning: no Linux prebuilt helper at ${prebuiltPath} and no cargo on PATH; ` +
+				`keeping the helper already installed at ${linuxHelperDestPath}. ` +
+				"Rebuild after changing native sources.",
+		);
+		return;
+	}
+
 	throw new Error(`No Linux prebuilt helper found for ${arch} at ${prebuiltPath}. Run node scripts/build-native.mjs --platform linux to build, or set PI_COMPUTER_USE_ALLOW_BUILD=1 to build at install time.`);
 }
 
