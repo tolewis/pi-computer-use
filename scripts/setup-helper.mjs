@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { spawn, execFile as execFileCallback } from "node:child_process";
+import { spawn, spawnSync, execFile as execFileCallback } from "node:child_process";
 import { constants as fsConstants, createWriteStream, realpathSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
@@ -28,10 +28,30 @@ const releaseRepo = "injaneity/pi-computer-use";
 const localCodeSignCommonName = "pi-computer-use Local Signing (com.injaneity.pi-computer-use)";
 const localSigningLockPath = path.join(os.tmpdir(), `pi-computer-use-local-signing-${typeof process.getuid === "function" ? process.getuid() : "user"}.lock`);
 
+/// Report whether a usable `cargo` is on PATH. Kept synchronous because the
+/// build flags below are module-level constants.
+function hasCargo() {
+	const probe = process.platform === "win32" ? "where" : "which";
+	try {
+		const { status } = spawnSync(probe, ["cargo"], { stdio: "ignore" });
+		return status === 0;
+	} catch {
+		return false;
+	}
+}
+
 const args = new Set(process.argv.slice(2));
 const isPostinstall = args.has("--postinstall");
-const allowBuildFallback = args.has("--allow-build") || args.has("--runtime") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
-const allowLinuxBuildFallback = args.has("--allow-build") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
+// Only macOS prebuilt helpers are committed to git. Installing from a git
+// checkout on Linux or Windows therefore finds no helper and, before this,
+// failed with an instruction to run a build command by hand. When a Rust
+// toolchain is already present there is nothing to decide, so build instead
+// of asking. Set PI_COMPUTER_USE_ALLOW_BUILD=0 to keep the old behavior.
+const buildOptOut = process.env.PI_COMPUTER_USE_ALLOW_BUILD === "0";
+const cargoAvailable = hasCargo();
+const buildDefault = !buildOptOut && cargoAvailable;
+const allowBuildFallback = args.has("--allow-build") || args.has("--runtime") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1" || buildDefault;
+const allowLinuxBuildFallback = args.has("--allow-build") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1" || buildDefault;
 const allowAdhocUpdate = args.has("--allow-adhoc-update") || process.env.PI_COMPUTER_USE_ALLOW_ADHOC_UPDATE === "1";
 
 function getArg(name) {
